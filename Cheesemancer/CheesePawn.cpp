@@ -2,8 +2,6 @@
 
 #include "CheesePawn.h"
 
-
-//
 #include "Engine/Engine.h"
 #include "Runtime/Engine/Public/DrawDebugHelpers.h"
 #include "Runtime/CoreUObject/Public/UObject/UnrealType.h"
@@ -11,6 +9,7 @@
 
 //
 #include "GameFramework/Character.h"
+#include "GameFramework/Controller.h"
 #include "GameFramework/SpringArmComponent.h"
 
 //
@@ -19,6 +18,25 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+
+// Called every frame
+void ACheesePawn::Tick(float DeltaTime)
+{
+
+	Super::Tick(DeltaTime);
+
+	if (!IsMovementFreezed)
+	{
+
+		InputCombination();
+		FloorCheck();
+		ControllerWalksSprintCheck();
+
+	}
+
+}
+
+#pragma region PLAYER INITIALIZATION
 
 // Sets default values
 ACheesePawn::ACheesePawn()
@@ -39,756 +57,105 @@ ACheesePawn::ACheesePawn()
 	RootComponent = Cast<USceneComponent>(CapsuleComponent);
 
 	//
-	IsClimbing = false;
-	IsFalling = false;
-	IsLedgeClimbing = false;
+	Controller = GetController();
 
 	//
 	SpringArm->SetupAttachment(RootComponent);
-	SpringArm->TargetArmLength = CameraDistance;
 
 	//
-	CapsuleComponent->SetSimulatePhysics(true);
 	Camera->SetupAttachment(SpringArm, USpringArmComponent::SocketName);
 
+
 }
+
 // Called when the game starts or when spawned
 void ACheesePawn::BeginPlay()
 {
-
 	Super::BeginPlay();
 
 	//
-	InteractMesh->OnComponentEndOverlap.AddDynamic(this, &ACheesePawn::PickupOverlapExit);
+	CharacterInitialization();
+
+	//
 	InteractMesh->OnComponentBeginOverlap.AddDynamic(this, &ACheesePawn::PickupOverlapBegin);
+	InteractMesh->OnComponentEndOverlap.AddDynamic(this, &ACheesePawn::PickupOverlapExit);
 	InteractMesh->OnComponentBeginOverlap.AddDynamic(this, &ACheesePawn::MushroomOverlapBegin);
 	InteractMesh->OnComponentEndOverlap.AddDynamic(this, &ACheesePawn::MushroomOverlapExit);
-	CapsuleComponent->OnComponentBeginOverlap.AddDynamic(this, &ACheesePawn::LedgeOverlap);
 
 }
-// Called every frame
-void ACheesePawn::Tick(float DeltaTime)
+
+/**
+
+Initialize Player Settings
+
+*/
+void ACheesePawn::CharacterInitialization()
 {
 
-	Super::Tick(DeltaTime);
+	//
+	SpringArm->TargetArmLength = CameraDistance;
+	SpringArm->bUsePawnControlRotation = true;
+	SpringArm->bInheritPitch = true;
+	SpringArm->bInheritYaw = true;
 
-	if (IsLedgeClimbing)
-	{
+	//
+	CapsuleComponent->SetSimulatePhysics(true);
+	CapsuleComponent->SetEnableGravity(true);
 
-		LedgeTransition();
+	//
+	Camera->SetRelativeLocation(CameraRelativeOffset);
 
-	}
-	else if (!IsLedgeClimbing)
-	{
-
-		CombinationPress();
-
-	}
-
-	FloorCheck();
-
-	if (HeldItem != nullptr && IsPickingStuffUp)
-	{
-
-		PickUpTransition();
-
-	}
-
-	FVector FinalItemPosition = GetActorLocation() + ItemHeldPosition;
-	if (HeldItem != nullptr && !IsPickingStuffUp)
-	{
-
-		FVector HeldLocation = HeldItem->GetActorLocation();
-		FVector Test = FMath().Lerp(HeldLocation, FinalItemPosition, 0.1f);
-		HeldItem->SetActorLocation(Test + GetControlRotation().Quaternion() * FVector(1, 1, 1) * GetWorld()->GetDeltaSeconds());
-		HeldItem->SetActorRotation(GetActorRotation());
-
-	}
+	//
+	IsFalling = false;
+	IsGrounded = false;
+	IsClimbing = false;
+	IsWalking = false;
+	IsLedgeClimbing = false;
+	IsPickingStuffUp = false;
+	IsMovementFreezed = false;
+	IsGravityEnabled = true;
 
 }
+
 // Called to bind functionality to input
 void ACheesePawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 
-	//
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
 	//
 	InputComponent = PlayerInputComponent;
 
-	//
+	// Keyboard Bindings
 	InputComponent->BindAxisKey(ForwardKey, this, &ACheesePawn::MoveForward);
 	InputComponent->BindAxisKey(BackwardKey, this, &ACheesePawn::MoveBackward);
 	InputComponent->BindAxisKey(LeftKey, this, &ACheesePawn::MoveLeft);
 	InputComponent->BindAxisKey(RightKey, this, &ACheesePawn::MoveRight);
+	InputComponent->BindKey(WalkKey, EInputEvent::IE_Pressed, this, &ACheesePawn::WalkingPress);
+	InputComponent->BindKey(WalkKey, EInputEvent::IE_Released, this, &ACheesePawn::WalkingRelease);
+	InputComponent->BindKey(Keyboard_InteractKey, EInputEvent::IE_Pressed, this, &ACheesePawn::Interact);
 
-	//
-	InputComponent->BindKey(Interactkey, EInputEvent::IE_Pressed, this, &ACheesePawn::Interact);
+	// Controller Bindings
+	InputComponent->BindAxisKey(EKeys::Gamepad_LeftX, this, &ACheesePawn::LeftThumbstickX);
+	InputComponent->BindAxisKey(EKeys::Gamepad_LeftY, this, &ACheesePawn::LeftThumbstickY);
+	InputComponent->BindAxisKey(EKeys::Gamepad_RightX, this, &ACheesePawn::RightThunbstickX);
+	InputComponent->BindAxisKey(EKeys::Gamepad_RightY, this, &ACheesePawn::RightThunbstickY);
+	InputComponent->BindKey(Controller_InteractKey, EInputEvent::IE_Pressed, this, &ACheesePawn::Interact);
 
-	//
+	// Mouse Bindings
 	InputComponent->BindAxisKey(EKeys::MouseX, this, &ACheesePawn::MouseMoveX);
 	InputComponent->BindAxisKey(EKeys::MouseY, this, &ACheesePawn::MouseMoveY);
 	InputComponent->BindAxisKey(EKeys::MouseWheelAxis, this, &ACheesePawn::Zoom);
 
-}
-//
-float ACheesePawn::GetLedgeDistance()
-{
-
-	FVector YUp = FVector().ZeroVector;
-
-	//
-	FHitResult* HitTest = new FHitResult();
-	FVector Self = GetActorLocation();
-	FVector Trace = (GetActorForwardVector() * 100) + Self;
-	FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
-
-	for (int i = 0; i < 5000; i++)
-	{
-
-		if (!GetWorld()->LineTraceSingleByChannel(*HitTest, Self + YUp, Trace, ECC_Visibility, *TraceParams))
-		{
-
-			YUp.Z = i;
-			break;
-
-		}
-
-	}
-
-	return YUp.Z;
-}
-
-// Handle Animation Transition
-#pragma region TransitionEvents
-//
-void ACheesePawn::LedgeTransition()
-{
-
-	if (SkeletalMesh->GetAnimInstance() != nullptr)
-	{
-
-		//
-		float XCurveValue = 0;
-		float XFinalValue = 0;
-
-		//
-		float YCurveValue = 0;
-		float YFinalValue = 0;
-
-
-		//
-		SkeletalMesh->GetAnimInstance()->GetCurveValue(TEXT("XCurve"), XCurveValue);
-		XFinalValue = CharacterLedgeClimbSpeed * XCurveValue;
-		GEngine->AddOnScreenDebugMessage(-1, 1.f, FColor::White, FString::Printf(TEXT("X: %f"), XCurveValue));
-
-
-		//
-		SkeletalMesh->GetAnimInstance()->GetCurveValue(TEXT("YCurve"), YCurveValue);
-		YFinalValue = CharacterLedgeClimbSpeed * YCurveValue;
-
-		SetActorLocation(GetActorLocation() + GetActorUpVector() * (XFinalValue + YFinalValue) * GetWorld()->GetDeltaSeconds());
-
-		CapsuleComponent->SetEnableGravity(GravityModifier);
-
-	}
 
 }
-//
-void ACheesePawn::PickUpTransition()
-{
-
-	float CurveValue = 0;
-
-	SkeletalMesh->GetAnimInstance()->GetCurveValue(TEXT("PickUpCurve"), CurveValue);
-
-	FVector FinalItemPosition = GetActorLocation() + ItemHeldPosition;
-	if (HeldItem != nullptr)
-	{
-
-		FVector HeldLocation = HeldItem->GetActorLocation();
-		FVector Test = FMath().Lerp(HeldLocation, FinalItemPosition, 0.1f);
-		HeldItem->SetActorLocation(Test + GetControlRotation().Quaternion() * CurveValue * FVector(1, 1, 1) * GetWorld()->GetDeltaSeconds());
-		HeldItem->SetActorRotation(GetActorRotation());
-
-	}
-
-}
-
 #pragma endregion
 
-// Overlap Events
-// Triggers for changes
-#pragma region OverlapEvents
-
-void ACheesePawn::PickupOverlapBegin(UPrimitiveComponent * OverlappedComponent, AActor * OtherActor, UPrimitiveComponent * OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult & SweepResult)
-{
-
-	if (OtherActor->ActorHasTag(PickUpTag))
-	{
-
-		if (!OverlappedPickups.Contains(OtherActor) && OtherActor != nullptr)
-		{
-			OverlappedPickups.Add(OtherActor);
-
-		}
-
-	}
-
-}
-
-void ACheesePawn::PickupOverlapExit(class UPrimitiveComponent* OverlappedComp, class AActor* OtherActor, class UPrimitiveComponent* OtherComp, int32 OtherBodyIndex)
-{
-
-	if (OtherActor->ActorHasTag(PickUpTag))
-	{
-
-		if (OverlappedPickups.Contains(OtherActor) && OtherActor != nullptr)
-		{
-
-			OverlappedPickups.Remove(OtherActor);
-
-		}
-
-	}
-
-}
-
-void ACheesePawn::MushroomOverlapBegin(UPrimitiveComponent * OverlappedComponent, AActor * OtherActor, UPrimitiveComponent * OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult & SweepResult)
-{
-
-	if (OtherActor->ActorHasTag(MushroomTag))
-	{
-
-		if (!OverlappedMushrooms.Contains(OtherActor) && OtherActor != nullptr)
-		{
-			OverlappedMushrooms.Add(OtherActor);
-
-		}
-
-	}
-
-}
-
-void ACheesePawn::MushroomOverlapExit(UPrimitiveComponent * OverlappedComp, AActor * OtherActor, UPrimitiveComponent * OtherComp, int32 OtherBodyIndex)
-{
-
-	if (OtherActor->ActorHasTag(MushroomTag))
-	{
-
-		if (OverlappedMushrooms.Contains(OtherActor) && OtherActor != nullptr)
-		{
-
-			OverlappedMushrooms.Remove(OtherActor);
-
-		}
-
-	}
-
-}
-
-void ACheesePawn::LedgeOverlap(UPrimitiveComponent * OverlappedComponent, AActor * OtherActor, UPrimitiveComponent * OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult & SweepResult)
-{
-
-	if (OtherActor->ActorHasTag(LedgeTag) && (IsClimbing || !IsFalling))
-	{
-
-		IsClimbing = false;
-		IsFalling = false;
-		IsLedgeClimbing = true;
-		GravityModifier = false;
-
-	}
-
-}
-
-#pragma endregion
-
-// Input Events
-// Handle events for character input
-// From movement to Interaction
-#pragma region InputEvents
-
-void ACheesePawn::CombinationPress()
-{
-
-	//
-	FRotator FaceDirection = GetActorRotation();
-	if (!IsClimbing && !IsPickingStuffUp)
-	{
-
-		// Forward
-		if (ForwardPress > 0)
-		{
-
-			FaceDirection = FMath().Lerp(GetActorRotation(), GetControlRotation(), 0.1f);
-			FaceDirection.Pitch = 0.0f;
-			FaceDirection.Roll = 0.0f;
-
-			//
-			SetActorRotation(FaceDirection);
-
-		}
-		// Backward
-		if (BackwardPress > 0)
-		{
-
-			//
-			FRotator Goal = GetControlRotation();
-			Goal.Yaw -= 180;
-			Goal.Pitch = 0.0f;
-			Goal.Roll = 0.0f;
-
-			//
-			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
-
-			//
-			SetActorRotation(FaceDirection);
-
-		}
-		// Left
-		if (LeftPress > 0)
-		{
-
-			//
-			FRotator Goal = GetControlRotation();
-			Goal.Yaw -= 90;
-			Goal.Pitch = 0.0f;
-			Goal.Roll = 0.0f;
-
-			//
-			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
-
-			//
-			SetActorRotation(FaceDirection);
-
-		}
-		// Left
-		if (RightPress > 0)
-		{
-
-			//
-			FRotator Goal = GetControlRotation();
-			Goal.Yaw += 90;
-			Goal.Pitch = 0.0f;
-			Goal.Roll = 0.0f;
-
-			//
-			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
-
-			//
-			SetActorRotation(FaceDirection);
-
-		}
-		// Forward, Left
-		if (ForwardPress > 0 && LeftPress > 0)
-		{
-
-			//
-			FRotator Goal = GetControlRotation();
-			Goal.Yaw -= 45;
-			Goal.Pitch = 0.0f;
-			Goal.Roll = 0.0f;
-
-			//
-			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
-
-			//
-			SetActorRotation(FaceDirection);
-
-		}
-		// Forward, Right
-		if (ForwardPress > 0 && RightPress > 0)
-		{
-
-			//
-			FRotator Goal = GetControlRotation();
-			Goal.Yaw += 45;
-			Goal.Pitch = 0.0f;
-			Goal.Roll = 0.0f;
-
-			//
-			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
-
-			//
-			SetActorRotation(FaceDirection);
-
-		}
-		// Backward, Left
-		if (BackwardPress > 0 && LeftPress > 0)
-		{
-
-			//
-			FRotator Goal = GetControlRotation();
-			Goal.Yaw -= 135;
-			Goal.Pitch = 0.0f;
-			Goal.Roll = 0.0f;
-
-			//
-			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
-
-			//
-			SetActorRotation(FaceDirection);
-
-		}
-		// Backward, Right
-		if (BackwardPress > 0 && RightPress > 0)
-		{
-
-			//
-			FRotator Goal = GetControlRotation();
-			Goal.Yaw += 135;
-			Goal.Pitch = 0.0f;
-			Goal.Roll = 0.0f;
-
-			//
-			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
-
-			//
-			SetActorRotation(FaceDirection);
-
-		}
-
-	}
-
-}
-
-void ACheesePawn::Interact()
-{
-
-	//
-	FHitResult* HitTest = new FHitResult();
-	FVector Self = GetActorLocation();
-	FVector Trace = (GetActorForwardVector() * 100) + Self;
-	FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
-
-	//DrawDebugLine(GetWorld(), Self, Trace, FColor(255, 0, 0), true);
-
-	if (!IsClimbing)
-	{
-
-		if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
-		{
-
-			if (HitTest->Actor->ActorHasTag(ClimbTag))
-			{
-
-				//
-				IsClimbing = true;
-				CapsuleComponent->SetEnableGravity(false);
-
-
-			}
-			if (HitTest->Actor->ActorHasTag(LedgeTag))
-			{
-
-				IsLedgeClimbing = true;
-
-			}
-
-		}
-
-	}
-	else if (IsClimbing)
-	{
-
-		IsClimbing = false;
-		CapsuleComponent->SetEnableGravity(true);
-
-	}
-
-
-	if (HeldItem == nullptr && OverlappedPickups.Num() != 0)
-	{
-
-		AActor* ClosestItem = OverlappedPickups[0];
-		for (int i = 1; i < OverlappedPickups.Num(); i++)
-		{
-
-			if (FVector().Distance(ClosestItem->GetActorLocation(), GetActorLocation())
-		> FVector().Distance(OverlappedPickups[i]->GetActorLocation(), GetActorLocation()))
-			{
-
-				ClosestItem = OverlappedPickups[i];
-
-			}
-
-		}
-
-		if (ClosestItem != nullptr)
-		{
-
-			HeldItem = ClosestItem;
-			IsPickingStuffUp = true;
-			UStaticMeshComponent* GravityDisable = Cast<UStaticMeshComponent>(HeldItem->GetRootComponent());
-			GravityDisable->SetEnableGravity(false);
-
-		}
-
-	}
-	else if (HeldItem != nullptr && OverlappedMushrooms.Num() == 0 && !IsClimbing)
-	{
-
-		UStaticMeshComponent* GravityDisable = Cast<UStaticMeshComponent>(HeldItem->GetRootComponent());
-		GravityDisable->SetEnableGravity(true);
-		HeldItem = nullptr;
-
-	}
-
-	if (OverlappedMushrooms.Num() != 0 && !IsPickingStuffUp)
-	{
-
-		AActor* Item = OverlappedMushrooms[0];
-
-		for (int i = 1; i < OverlappedPickups.Num(); i++)
-		{
-
-			if (FVector().Distance(Item->GetActorLocation(), GetActorLocation())
-		> FVector().Distance(OverlappedPickups[i]->GetActorLocation(), GetActorLocation()))
-			{
-
-				Item = OverlappedMushrooms[i];
-
-			}
-
-		}
-
-		if (Item != nullptr && OverlappedMushrooms.Contains(Item))
-		{
-
-			IsPickingStuffUp = true;
-			MushroomCount += 1;
-			OverlappedMushrooms.Remove(Item);
-			Item->Destroy();
-
-		}
-
-	}
-
-}
-
-void ACheesePawn::MoveForward(float AxisValue)
-{
-
-	//
-	ForwardPress = AxisValue;
-
-	//
-	FVector CurrentCameraDirection = GetControlRotation().Quaternion() * FVector(AxisValue, 0, 0);
-	CurrentCameraDirection.Z = 0;
-
-	if (AxisValue > 0)
-	{
-
-		if (!IsClimbing && !IsPickingStuffUp)
-		{
-
-			//
-			SetActorLocation(GetActorLocation() + CurrentCameraDirection * CharacterSpeed * GetWorld()->GetDeltaSeconds());
-
-		}
-		else if (IsClimbing)
-		{
-
-			float CurveValue = 0;
-			float FinalValue = 0;
-
-			SkeletalMesh->GetAnimInstance()->GetCurveValue(TEXT("ClimbCurve"), CurveValue);
-			FinalValue = CharacterClimbSpeed * CurveValue;
-
-			if (!WallClimbCheck())
-			{
-
-				IsClimbing = false;
-				CapsuleComponent->SetEnableGravity(true);
-
-			}
-
-			//
-			SetActorLocation(GetActorLocation() + GetActorUpVector() * FinalValue * GetWorld()->GetDeltaSeconds());
-
-		}
-
-	}
-
-}
-
-void ACheesePawn::MoveBackward(float AxisValue)
-{
-
-	//
-	BackwardPress = AxisValue;
-
-	FHitResult* HitTest = new FHitResult();
-	FVector Self = GetActorLocation();
-	FVector Down = GetActorUpVector() * -1;
-	FVector Trace = (Down * 100) + Self;
-	FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
-
-	//
-	FVector CurrentCameraDirection = GetControlRotation().Quaternion() * FVector(AxisValue * -1, 0, 0);
-	CurrentCameraDirection.Z = 0;
-
-	if (AxisValue > 0)
-	{
-
-		//
-		if (!IsClimbing && !IsPickingStuffUp)
-		{
-
-			//
-			SetActorLocation(GetActorLocation() + CurrentCameraDirection * CharacterSpeed * GetWorld()->GetDeltaSeconds());
-
-		}
-		else if (IsClimbing)
-		{
-
-			float CurveValue = 0;
-			float FinalValue = 0;
-
-			SkeletalMesh->GetAnimInstance()->GetCurveValue(TEXT("ClimbCurve"), CurveValue);
-			FinalValue = CharacterClimbSpeed * CurveValue;
-
-			if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
-			{
-
-				IsClimbing = false;
-				CapsuleComponent->SetEnableGravity(true);
-				SetActorLocation(GetActorLocation() + (GetActorUpVector() * -1) * FinalValue * GetWorld()->GetDeltaSeconds());
-
-			}
-
-			SetActorLocation(GetActorLocation() + (GetActorUpVector() * -1) * FinalValue * GetWorld()->GetDeltaSeconds());
-
-		}
-
-	}
-
-}
-
-void ACheesePawn::MoveLeft(float AxisValue)
-{
-
-	//
-	LeftPress = AxisValue;
-
-	//
-	FVector CurrentCameraDirection = GetControlRotation().Quaternion() * FVector(0, AxisValue * -1, 0);
-	CurrentCameraDirection.Z = 0;
-
-	if (AxisValue > 0)
-	{
-
-		//
-		if (!IsClimbing && !IsPickingStuffUp)
-		{
-
-			//
-			SetActorLocation(GetActorLocation() + CurrentCameraDirection * CharacterSpeed * GetWorld()->GetDeltaSeconds());
-
-		}
-		else if (IsClimbing)
-		{
-
-			//
-			if (!WallClimbCheck())
-			{
-
-				IsClimbing = false;
-				CapsuleComponent->SetEnableGravity(true);
-
-			}
-
-			float CurveValue = 0;
-			float FinalValue = 0;
-
-			SkeletalMesh->GetAnimInstance()->GetCurveValue(TEXT("ClimbCurve"), CurveValue);
-			FinalValue = CharacterClimbSpeed * CurveValue;
-
-			//
-			SetActorLocation(GetActorLocation() + (GetActorRightVector() * AxisValue * -1) * FinalValue * GetWorld()->GetDeltaSeconds());
-
-		}
-
-	}
-
-}
-
-void ACheesePawn::MoveRight(float AxisValue)
-{
-
-	//
-	RightPress = AxisValue;
-
-	//
-	FVector CurrentCameraDirection = GetControlRotation().Quaternion() * FVector(0, AxisValue, 0);
-	CurrentCameraDirection.Z = 0;
-
-	if (AxisValue > 0)
-	{
-
-		if (!IsClimbing && !IsPickingStuffUp)
-		{
-
-			//
-			SetActorLocation(GetActorLocation() + CurrentCameraDirection * CharacterSpeed * GetWorld()->GetDeltaSeconds());
-
-		}
-		else if (IsClimbing)
-		{
-
-			//
-			if (!WallClimbCheck())
-			{
-
-				IsClimbing = false;
-				CapsuleComponent->SetEnableGravity(true);
-
-			}
-
-			float CurveValue = 0;
-			float FinalValue = 0;
-			SkeletalMesh->GetAnimInstance()->GetCurveValue(TEXT("ClimbCurve"), CurveValue);
-			FinalValue = CharacterClimbSpeed * CurveValue;
-
-			//
-			SetActorLocation(GetActorLocation() + (GetActorRightVector() * AxisValue) * FinalValue * GetWorld()->GetDeltaSeconds());
-
-		}
-
-	}
-
-}
-
-void ACheesePawn::Zoom(float AxisValue)
-{
-
-
-	FMath().Clamp<float>(SpringArm->TargetArmLength, ZoomLimits.X, ZoomLimits.Y);
-	SpringArm->TargetArmLength -= AxisValue * ZoomSpeed * GetWorld()->GetDeltaSeconds();
-
-}
-
-void ACheesePawn::MouseMoveX(float AxisValue)
-{
-
-	AddControllerYawInput(AxisValue * FMath().Clamp<float>(CameraMoveSpeed * GetWorld()->GetDeltaSeconds(), 0, 2));
-
-}
-
-void ACheesePawn::MouseMoveY(float AxisValue)
-{
-
-	AddControllerPitchInput(AxisValue * FMath().Clamp<float>(CameraMoveSpeed * GetWorld()->GetDeltaSeconds(), 0, 2));
-
-}
-
-#pragma endregion
-
-// Environment Checks
-// Checks for Climb Areas, Ledge Areas, and floor check
-#pragma region Environment Checks
-
+#pragma region ENVIRONMENT CHECKS
+
+/**
+	Check if floor is within range
+*/
 void ACheesePawn::FloorCheck()
 {
 
@@ -802,7 +169,6 @@ void ACheesePawn::FloorCheck()
 
 		CapsuleComponent->SetLinearDamping(1.0f);
 		CapsuleComponent->SetAngularDamping(1.0f);
-		IsFalling = true;
 
 	}
 	else if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
@@ -810,31 +176,680 @@ void ACheesePawn::FloorCheck()
 
 		CapsuleComponent->SetLinearDamping(5.0f);
 		CapsuleComponent->SetAngularDamping(5.0f);
-		IsFalling = false;
 
 	}
 
 }
 
-bool ACheesePawn::WallClimbCheck()
+/**
+	Check if floor is within range
+*/
+void ACheesePawn::ControllerWalksSprintCheck()
 {
 
-	//
-	FHitResult* HitTest = new FHitResult();
-	FVector Self = GetActorLocation();
-	FVector Trace = (GetActorForwardVector() * 100) + Self;
-	FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
-
-	if (!GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+	if (LeftThumbstickMoveX != 0 || LeftThumbstickMoveY != 0)
 	{
 
-		return false;
+		if (FMath::Abs<float>(LeftThumbstickMoveX) + FMath::Abs<float>(LeftThumbstickMoveY) > MinimumValueToNotSprint)
+		{
+
+			IsWalking = false;
+
+		}
+		else
+		{
+
+			IsWalking = true;
+
+		}
 
 	}
 
-	return true;
+}
+
+
+#pragma endregion
+
+#pragma region OVERLAP EVENTS HANDLERS
+
+void ACheesePawn::PickupOverlapBegin(UPrimitiveComponent * OverlappedComponent, AActor * OtherActor, UPrimitiveComponent * OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult & SweepResult)
+{
+
+	if (OtherActor->ActorHasTag(PickUpTag))
+	{
+
+		if (!OverlappedPickupItems.Contains(OtherActor) && OtherActor != nullptr)
+		{
+
+			OverlappedPickupItems.Add(OtherActor);
+
+		}
+
+	}
+
+}
+
+void ACheesePawn::PickupOverlapExit(UPrimitiveComponent * OverlappedComp, AActor * OtherActor, UPrimitiveComponent * OtherComp, int32 OtherBodyIndex)
+{
+
+	if (OtherActor->ActorHasTag(PickUpTag))
+	{
+
+		if (OverlappedPickupItems.Contains(OtherActor) && OtherActor != nullptr)
+		{
+
+			OverlappedPickupItems.Remove(OtherActor);
+
+		}
+
+	}
+
+}
+
+void ACheesePawn::MushroomOverlapBegin(UPrimitiveComponent * OverlappedComponent, AActor * OtherActor, UPrimitiveComponent * OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult & SweepResult)
+{
+
+	if (OtherActor->ActorHasTag(MushroomTag))
+	{
+
+		if (!OverlappedMushroomItems.Contains(OtherActor) && OtherActor != nullptr)
+		{
+
+			OverlappedMushroomItems.Add(OtherActor);
+
+		}
+
+	}
+
+}
+
+void ACheesePawn::MushroomOverlapExit(UPrimitiveComponent * OverlappedComp, AActor * OtherActor, UPrimitiveComponent * OtherComp, int32 OtherBodyIndex)
+{
+
+	if (OtherActor->ActorHasTag(MushroomTag))
+	{
+
+		if (OverlappedMushroomItems.Contains(OtherActor) && OtherActor != nullptr)
+		{
+
+			OverlappedMushroomItems.Remove(OtherActor);
+
+		}
+
+	}
+
+}
+
+void ACheesePawn::LedgeOverlap(UPrimitiveComponent * OverlappedComponent, AActor * OtherActor, UPrimitiveComponent * OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult & SweepResult)
+{
+}
+
+#pragma region OVERLAP FUNCION HELPERS
+
+void ACheesePawn::PickUpClosestItem()
+{
+
+	AActor* Item = OverlappedPickupItems[0];
+	for (int i = 1; i < OverlappedPickupItems.Num(); i++)
+	{
+
+		if (FVector().Distance(Item->GetActorLocation(), GetActorLocation())
+	> FVector().Distance(OverlappedPickupItems[i]->GetActorLocation(), GetActorLocation()))
+		{
+
+			Item = OverlappedPickupItems[i];
+
+		}
+
+	}
+
+	if (Item != nullptr)
+	{
+
+		HeldItem = Item;
+		IsPickingStuffUp = true;
+		UStaticMeshComponent* GravityDisable = Cast<UStaticMeshComponent>(HeldItem->GetRootComponent());
+		GravityDisable->SetEnableGravity(false);
+
+	}
+
+}
+
+void ACheesePawn::PickUpClosestMushroom()
+{
+
+	AActor* Item = OverlappedMushroomItems[0];
+
+	for (int i = 1; i < OverlappedMushroomItems.Num(); i++)
+	{
+
+		if (FVector().Distance(Item->GetActorLocation(), GetActorLocation())
+	> FVector().Distance(OverlappedMushroomItems[i]->GetActorLocation(), GetActorLocation()))
+		{
+
+			Item = OverlappedMushroomItems[i];
+
+		}
+
+	}
+
+	if (Item != nullptr && OverlappedMushroomItems.Contains(Item))
+	{
+
+		IsPickingStuffUp = true;
+		MushroomCount += 1;
+		OverlappedMushroomItems.Remove(Item);
+		Item->Destroy();
+
+	}
+
+}
+
+void ACheesePawn::RaycastCheck()
+{
 }
 
 #pragma endregion
 
-//GEngine->AddOnScreenDebugMessage(-1, 1.f, FColor::White, FString::Printf(TEXT("X: %f"), AxisValue));
+#pragma endregion
+
+#pragma region INPUT EVENTS HANDLERS
+
+/**
+	Interact with objects
+*/
+void ACheesePawn::Interact()
+{
+
+	if (OverlappedPickupItems.Num() != 0)
+	{
+
+		PickUpClosestItem();
+
+	}
+	if (OverlappedMushroomItems.Num() != 0)
+	{
+
+		PickUpClosestMushroom();
+
+	}
+
+}
+
+/**
+	Move player forward
+*/
+void ACheesePawn::MoveForward(float AxisValue)
+{
+
+	//
+	ForwardPress = AxisValue;
+	//
+	FVector FinalPosition = GetActorLocation() + GetPlayerForwardDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
+	SetActorLocation(FinalPosition);
+
+}
+
+/**
+	Move player backward
+*/
+void ACheesePawn::MoveBackward(float AxisValue)
+{
+
+	//
+	BackwardPress = AxisValue;
+	//
+	FVector FinalPosition = GetActorLocation() + GetPlayerBackwardDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
+	SetActorLocation(FinalPosition);
+
+}
+
+/**
+	Move player left
+*/
+void ACheesePawn::MoveLeft(float AxisValue)
+{
+
+	//
+	LeftPress = AxisValue;
+	//
+	FVector FinalPosition = GetActorLocation() + GetPlayerLeftDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
+	SetActorLocation(FinalPosition);
+
+}
+
+/**
+	Move player right
+*/
+void ACheesePawn::MoveRight(float AxisValue)
+{
+
+	//
+	RightPress = AxisValue;
+	//
+	FVector FinalPosition = GetActorLocation() + GetPlayerRightDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
+	SetActorLocation(FinalPosition);
+
+}
+
+/**
+	Walking is true if Walk key is pressed
+*/
+void ACheesePawn::WalkingPress()
+{
+
+	IsWalking = true;
+
+}
+
+/**
+	Walking is false if Walk key was released
+*/
+void ACheesePawn::WalkingRelease()
+{
+
+	IsWalking = false;
+
+}
+
+/**
+	Move player at the right axis using the Controller
+*/
+void ACheesePawn::LeftThumbstickX(float AxisValue)
+{
+
+	//
+	LeftThumbstickMoveX = AxisValue;
+	if (AxisValue != 0)
+	{
+
+		FVector FinalPosition = GetActorLocation() + GetPlayerForwardAxis(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
+		SetActorLocation(FinalPosition);
+
+	}
+
+}
+
+/**
+	Move player at the forward axis using the Controller 
+*/
+void ACheesePawn::LeftThumbstickY(float AxisValue)
+{
+
+	//
+	LeftThumbstickMoveY = AxisValue;
+	if (AxisValue != 0)
+	{
+
+		FVector FinalPosition = GetActorLocation() + GetPlayerRightAxis(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
+		SetActorLocation(FinalPosition);
+
+	}
+
+}
+
+/**
+	Adjust Camera Yaw relative to player using the Controller
+*/
+void ACheesePawn::RightThunbstickX(float AxisValue)
+{
+
+	//
+	RightThumbStickMoveX = AxisValue;
+	AddControllerYawInput(AxisValue * (CameraInvertYaw ? -1 : 1) * CameraYawMoveSpeed * GetWorld()->GetDeltaSeconds());
+
+}
+
+/**
+	Adjust Camera Pitch relative to player using the Controller
+*/
+void ACheesePawn::RightThunbstickY(float AxisValue)
+{
+
+	//
+	RightThumbStickMoveY = AxisValue;
+	AddControllerPitchInput(AxisValue * (CameraInvertPitch ? 1 : -1) * CameraPitchMoveSpeed * GetWorld()->GetDeltaSeconds());
+
+}
+
+/**
+	Adjust Camera Yaw relative to player using the Mouse
+*/
+void ACheesePawn::MouseMoveX(float AxisValue)
+{
+
+	AddControllerYawInput(AxisValue * (CameraInvertYaw ? -1 : 1) * CameraYawMoveSpeed * GetWorld()->GetDeltaSeconds());
+
+}
+
+/**
+	Adjust Camera Pitch relative to player using the Mouse
+*/
+void ACheesePawn::MouseMoveY(float AxisValue)
+{
+
+	AddControllerPitchInput(AxisValue * (CameraInvertPitch ? -1 : 1) * CameraPitchMoveSpeed * GetWorld()->GetDeltaSeconds());
+
+}
+
+/**
+	Shorten or extend Camera boom
+*/
+void ACheesePawn::Zoom(float AxisValue)
+{
+
+	SpringArm->TargetArmLength -= AxisValue * CameraZoomSpeed * GetWorld()->GetDeltaSeconds();
+	FMath().Clamp<float>(SpringArm->TargetArmLength, CameraZoomLimits.X, CameraZoomLimits.Y);
+
+}
+
+
+/**
+	Determine combination presses and rotate player to match direction
+*/
+void ACheesePawn::InputCombination()
+{
+
+	//
+	FRotator FaceDirection = GetActorRotation();
+	// Forward
+	if (ForwardPress > 0)
+	{
+
+		FaceDirection = FMath().Lerp(GetActorRotation(), GetControlRotation(), 0.1f);
+		FaceDirection.Pitch = 0.0f;
+		FaceDirection.Roll = 0.0f;
+
+		//
+		SetActorRotation(FaceDirection);
+
+	}
+	// Backward
+	if (BackwardPress > 0)
+	{
+
+		//
+		FRotator Goal = GetControlRotation();
+		Goal.Yaw -= 180;
+		Goal.Pitch = 0.0f;
+		Goal.Roll = 0.0f;
+
+		//
+		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+
+		//
+		SetActorRotation(FaceDirection);
+
+	}
+	// Left
+	if (LeftPress > 0)
+	{
+
+		//
+		FRotator Goal = GetControlRotation();
+		Goal.Yaw -= 90;
+		Goal.Pitch = 0.0f;
+		Goal.Roll = 0.0f;
+
+		//
+		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+
+		//
+		SetActorRotation(FaceDirection);
+
+	}
+	// Left
+	if (RightPress > 0)
+	{
+
+		//
+		FRotator Goal = GetControlRotation();
+		Goal.Yaw += 90;
+		Goal.Pitch = 0.0f;
+		Goal.Roll = 0.0f;
+
+		//
+		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+
+		//
+		SetActorRotation(FaceDirection);
+
+	}
+	// Forward, Left
+	if (ForwardPress > 0 && LeftPress > 0)
+	{
+
+		//
+		FRotator Goal = GetControlRotation();
+		Goal.Yaw -= 45;
+		Goal.Pitch = 0.0f;
+		Goal.Roll = 0.0f;
+
+		//
+		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+
+		//
+		SetActorRotation(FaceDirection);
+
+	}
+	// Forward, Right
+	if (ForwardPress > 0 && RightPress > 0)
+	{
+
+		//
+		FRotator Goal = GetControlRotation();
+		Goal.Yaw += 45;
+		Goal.Pitch = 0.0f;
+		Goal.Roll = 0.0f;
+
+		//
+		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+
+		//
+		SetActorRotation(FaceDirection);
+
+	}
+	// Backward, Left
+	if (BackwardPress > 0 && LeftPress > 0)
+	{
+
+		//
+		FRotator Goal = GetControlRotation();
+		Goal.Yaw -= 135;
+		Goal.Pitch = 0.0f;
+		Goal.Roll = 0.0f;
+
+		//
+		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+
+		//
+		SetActorRotation(FaceDirection);
+
+	}
+	// Backward, Right
+	if (BackwardPress > 0 && RightPress > 0)
+	{
+
+		//
+		FRotator Goal = GetControlRotation();
+		Goal.Yaw += 135;
+		Goal.Pitch = 0.0f;
+		Goal.Roll = 0.0f;
+
+		//
+		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+
+		//
+		SetActorRotation(FaceDirection);
+
+	}
+	// Left Thumbstick Axes
+	if (LeftThumbstickMoveX != 0 || LeftThumbstickMoveY != 0)
+	{
+
+		//
+		FRotator Goal = GetControlRotation();
+		Goal.Yaw += atan2(LeftThumbstickMoveX, LeftThumbstickMoveY) * 180 / PI;
+		Goal.Pitch = 0.0f;
+		Goal.Roll = 0.0f;
+
+		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+
+		//
+		SetActorRotation(FaceDirection);
+
+	}
+
+}
+
+#pragma endregion
+
+#pragma region PLAYER DATA GETTERS
+
+/**
+	Get camera controller rotation
+*/
+FRotator ACheesePawn::GetCameraRotation()
+{
+
+	return GetControlRotation();
+
+}
+
+/**
+	Get player rotation
+*/
+FRotator ACheesePawn::GetPlayerRotation()
+{
+
+	return GetActorRotation();
+
+}
+
+/**
+	Returns player forward axis based on camera direction
+*/
+FVector ACheesePawn::GetPlayerForwardAxis(float AxisValue, bool IgnoreZ = false)
+{
+
+	//
+	FVector Forward = GetControlRotation().Quaternion() * FVector(0, AxisValue, 0);
+	if (IgnoreZ) Forward.Z = 0;
+
+	//
+	return Forward;
+
+}
+
+/**
+	Returns player right axis based on camera direction
+*/
+FVector ACheesePawn::GetPlayerRightAxis(float AxisValue, bool IgnoreZ = false)
+{
+
+	//
+	FVector Right = GetControlRotation().Quaternion() * FVector(AxisValue, 0, 0);
+	if (IgnoreZ) Right.Z = 0;
+
+	//
+	return Right;
+
+}
+
+/**
+	Returns player forward direction based on camera direction
+*/
+FVector ACheesePawn::GetPlayerForwardDirection(float AxisValue, bool IgnoreZ = false)
+{
+
+	//
+	FVector Forward = GetControlRotation().Quaternion() * FVector(AxisValue, 0, 0);
+	if (IgnoreZ) Forward.Z = 0;
+
+	//
+	return Forward;
+
+}
+
+/**
+	Returns player backward direction based on camera direction
+*/
+FVector ACheesePawn::GetPlayerBackwardDirection(float AxisValue, bool IgnoreZ = false)
+{
+
+	//
+	FVector Backward = GetControlRotation().Quaternion() * FVector(AxisValue * -1, 0, 0);
+	if (IgnoreZ) Backward.Z = 0;
+
+	//
+	return Backward;
+
+}
+
+/**
+	Returns player left direction based on camera direction
+*/
+FVector ACheesePawn::GetPlayerLeftDirection(float AxisValue, bool IgnoreZ = false)
+{
+	//
+	FVector Left = GetControlRotation().Quaternion() * FVector(0, AxisValue * -1, 0);
+	if (IgnoreZ) Left.Z = 0;
+
+	//
+	return Left;
+}
+
+/**
+	Returns player right direction based on camera direction
+*/
+FVector ACheesePawn::GetPlayerRightDirection(float AxisValue, bool IgnoreZ = false)
+{
+	//
+	FVector Right = GetControlRotation().Quaternion() * FVector(0, AxisValue, 0);
+	if (IgnoreZ) Right.Z = 0;
+
+	//
+	return Right;
+}
+
+#pragma endregion
+
+#pragma region PLAYER MANIPULATION FUNCTIONS
+
+/**
+
+	Freeze player Movement
+
+*/
+void ACheesePawn::FreezeMovement()
+{
+
+	IsMovementFreezed = true;
+
+}
+
+/**
+
+	Freeze player Movement within a specified time frame
+
+*/
+void ACheesePawn::FreezeMovement(float FreezeLength)
+{
+
+	IsMovementFreezed = true;
+
+}
+
+/**
+
+	UnFreeze player Movement
+
+*/
+void ACheesePawn::UnfreezeMovement()
+{
+	
+	IsMovementFreezed = false;
+
+}
+
+#pragma endregion
