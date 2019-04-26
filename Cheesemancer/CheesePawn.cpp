@@ -3,6 +3,7 @@
 #include "CheesePawn.h"
 
 #include "Engine/Engine.h"
+#include "Runtime/Core/Public/Containers/Set.h"
 #include "Runtime/Engine/Public/DrawDebugHelpers.h"
 #include "Runtime/CoreUObject/Public/UObject/UnrealType.h"
 #include "Runtime/Engine/Classes/Animation/AnimInstance.h"
@@ -18,6 +19,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/SkinnedMeshComponent.h"
 
 // Called every frame
 void ACheesePawn::Tick(float DeltaTime)
@@ -27,12 +29,13 @@ void ACheesePawn::Tick(float DeltaTime)
 
 	if (!IsMovementFreezed)
 	{
-
-		InputCombination();
 		FloorCheck();
+		LedgeTransition();
+		InputCombination();
 		ControllerWalksSprintCheck();
-
 	}
+
+	UpdateSocketPositions();
 
 }
 
@@ -61,6 +64,8 @@ ACheesePawn::ACheesePawn()
 
 	//
 	SpringArm->SetupAttachment(RootComponent);
+	InteractMesh->SetupAttachment(RootComponent);
+	SkeletalMesh->SetupAttachment(RootComponent);
 
 	//
 	Camera->SetupAttachment(SpringArm, USpringArmComponent::SocketName);
@@ -115,6 +120,25 @@ void ACheesePawn::CharacterInitialization()
 	IsMovementFreezed = false;
 	IsGravityEnabled = true;
 
+	if (StaffHeldItem != nullptr)
+	{
+
+		//StaffHeldItem->SetActorRotation(FQuat(FVector(0, 0, 1), 180));
+		Cast<UPrimitiveComponent>(StaffHeldItem->GetRootComponent())->SetMobility(EComponentMobility::Movable);
+		Cast<UPrimitiveComponent>(StaffHeldItem->GetRootComponent())->SetCollisionProfileName("NoCollision");
+		StaffHeldItem->AttachToComponent(SkeletalMesh, FAttachmentTransformRules(EAttachmentRule::SnapToTarget, EAttachmentRule::KeepWorld, EAttachmentRule::KeepWorld, true), RightHandStaffSocketName);
+		StaffHeldItem->SetActorRotation(FQuat().MakeFromEuler(FVector(-90.0f, 0.0f, -90)));
+		DisableActorGravity(StaffHeldItem);
+
+	}
+
+}
+
+UInputComponent* ACheesePawn::GetInputComponent()
+{
+
+	return InputComponent;
+		
 }
 
 // Called to bind functionality to input
@@ -134,6 +158,7 @@ void ACheesePawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponen
 	InputComponent->BindKey(WalkKey, EInputEvent::IE_Pressed, this, &ACheesePawn::WalkingPress);
 	InputComponent->BindKey(WalkKey, EInputEvent::IE_Released, this, &ACheesePawn::WalkingRelease);
 	InputComponent->BindKey(Keyboard_InteractKey, EInputEvent::IE_Pressed, this, &ACheesePawn::Interact);
+	InputComponent->BindKey(Keyboard_InteractKey, EInputEvent::IE_Released, this, &ACheesePawn::InteractRelease);
 
 	// Controller Bindings
 	InputComponent->BindAxisKey(EKeys::Gamepad_LeftX, this, &ACheesePawn::LeftThumbstickX);
@@ -141,6 +166,7 @@ void ACheesePawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponen
 	InputComponent->BindAxisKey(EKeys::Gamepad_RightX, this, &ACheesePawn::RightThunbstickX);
 	InputComponent->BindAxisKey(EKeys::Gamepad_RightY, this, &ACheesePawn::RightThunbstickY);
 	InputComponent->BindKey(Controller_InteractKey, EInputEvent::IE_Pressed, this, &ACheesePawn::Interact);
+	InputComponent->BindKey(Controller_InteractKey, EInputEvent::IE_Released, this, &ACheesePawn::InteractRelease);
 
 	// Mouse Bindings
 	InputComponent->BindAxisKey(EKeys::MouseX, this, &ACheesePawn::MouseMoveX);
@@ -161,12 +187,13 @@ void ACheesePawn::FloorCheck()
 
 	FHitResult* HitTest = new FHitResult();
 	FVector Self = GetActorLocation();
-	FVector Trace = Self + ((GetActorUpVector() * -1) * CapsuleComponent->GetScaledCapsuleHalfHeight() * 2);
+	FVector Trace = Self + (GetActorUpVector() * -1) * CapsuleComponent->GetScaledCapsuleHalfHeight() * 1.25f;
 	FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
 
 	if (!GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
 	{
 
+		IsFalling = true;
 		CapsuleComponent->SetLinearDamping(1.0f);
 		CapsuleComponent->SetAngularDamping(1.0f);
 
@@ -174,6 +201,7 @@ void ACheesePawn::FloorCheck()
 	else if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
 	{
 
+		IsFalling = false;
 		CapsuleComponent->SetLinearDamping(5.0f);
 		CapsuleComponent->SetAngularDamping(5.0f);
 
@@ -294,7 +322,7 @@ void ACheesePawn::PickUpClosestItem()
 	{
 
 		if (FVector().Distance(Item->GetActorLocation(), GetActorLocation())
-	> FVector().Distance(OverlappedPickupItems[i]->GetActorLocation(), GetActorLocation()))
+			> FVector().Distance(OverlappedPickupItems[i]->GetActorLocation(), GetActorLocation()))
 		{
 
 			Item = OverlappedPickupItems[i];
@@ -306,10 +334,11 @@ void ACheesePawn::PickUpClosestItem()
 	if (Item != nullptr)
 	{
 
-		HeldItem = Item;
 		IsPickingStuffUp = true;
-		UStaticMeshComponent* GravityDisable = Cast<UStaticMeshComponent>(HeldItem->GetRootComponent());
-		GravityDisable->SetEnableGravity(false);
+		HatHeldItem = Item;
+		Cast<UPrimitiveComponent>(HatHeldItem->GetRootComponent())->SetCollisionProfileName("NoCollision");
+		//HatHeldItem->AttachToComponent(SkeletalMesh, FAttachmentTransformRules(EAttachmentRule::SnapToTarget, EAttachmentRule::KeepRelative, EAttachmentRule::KeepWorld, true), ItemHatSocketName);
+		DisableActorGravity(HatHeldItem);
 
 	}
 
@@ -324,7 +353,7 @@ void ACheesePawn::PickUpClosestMushroom()
 	{
 
 		if (FVector().Distance(Item->GetActorLocation(), GetActorLocation())
-	> FVector().Distance(OverlappedMushroomItems[i]->GetActorLocation(), GetActorLocation()))
+			> FVector().Distance(OverlappedMushroomItems[i]->GetActorLocation(), GetActorLocation()))
 		{
 
 			Item = OverlappedMushroomItems[i];
@@ -345,8 +374,66 @@ void ACheesePawn::PickUpClosestMushroom()
 
 }
 
-void ACheesePawn::RaycastCheck()
+void ACheesePawn::EnableActorGravity(AActor * Actor)
 {
+
+	UPrimitiveComponent* UPC = Cast<UPrimitiveComponent>(Actor->GetRootComponent());
+	UPC->SetEnableGravity(true);
+
+}
+
+void ACheesePawn::DisableActorGravity(AActor * Actor)
+{
+
+	UPrimitiveComponent* UPC = Cast<UPrimitiveComponent>(Actor->GetRootComponent());
+	UPC->SetEnableGravity(false);
+
+}
+
+void ACheesePawn::UpdateSocketPositions()
+{
+
+	if (SkeletalMesh != nullptr)
+	{
+
+		FVector FinalItemPosition = SkeletalMesh->GetSocketLocation(ItemHatSocketName);
+		if (HatHeldItem != nullptr && !IsPickingStuffUp)
+		{
+
+			FVector HeldLocation = HatHeldItem->GetActorLocation();
+			FVector LocationFix = FMath().Lerp(HeldLocation, FinalItemPosition, 0.1f);
+			HatHeldItem->SetActorLocation(LocationFix + GetControlRotation().Quaternion() * FVector(1, 1, 1) * GetWorld()->GetDeltaSeconds());
+			HatHeldItem->SetActorRotation(GetActorRotation());
+
+		}
+		else if (HatHeldItem != nullptr && IsPickingStuffUp)
+		{
+
+			float PickUpCurve = SkeletalMesh->GetAnimInstance()->GetCurveValue("PickUpCurve");
+			FVector HeldLocation = HatHeldItem->GetActorLocation();
+			FVector LocationFix = FMath().Lerp(HeldLocation, FinalItemPosition, PickUpCurve * 0.1);
+			HatHeldItem->SetActorLocation(LocationFix + GetControlRotation().Quaternion() * FVector(1, 1, 1) * GetWorld()->GetDeltaSeconds());
+			HatHeldItem->SetActorRotation(GetActorRotation());
+
+		}
+		
+	}
+
+	if (!IsClimbing)
+	{
+
+		if (StaffHeldItem->GetAttachParentSocketName() != RightHandStaffSocketName)
+		{
+			StaffHeldItem->DetachFromActor(FDetachmentTransformRules(EDetachmentRule::KeepWorld, true));
+			StaffHeldItem->AttachToComponent(SkeletalMesh, FAttachmentTransformRules(EAttachmentRule::SnapToTarget, EAttachmentRule::KeepWorld, EAttachmentRule::KeepWorld, true), RightHandStaffSocketName);
+		}
+		
+		StaffHeldItem->SetActorRotation(FQuat().MakeFromEuler(FVector(-90, 0, -90)));
+
+	}
+
+
+
 }
 
 #pragma endregion
@@ -356,23 +443,122 @@ void ACheesePawn::RaycastCheck()
 #pragma region INPUT EVENTS HANDLERS
 
 /**
+	Engage Ledge Transition
+*/
+void ACheesePawn::LedgeTransition()
+{
+
+	if (IsLedgeClimbing)
+	{
+
+		FVector Position = FMath().Lerp(GetActorLocation(), FinalLedgePosition, GetWorld()->GetDeltaSeconds());
+		SetActorLocation(Position + GetActorForwardVector() * 2, false, nullptr, ETeleportType::TeleportPhysics);
+	}
+
+}
+
+void ACheesePawn::LedgePositionCheck()
+{
+
+	FHitResult* HitTest = new FHitResult();
+	FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
+
+	//
+	FVector InitialPosition = GetActorLocation();
+	FVector FinalPosition = (GetActorForwardVector() * 150) + GetActorLocation();
+	//
+	while (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), FinalPosition, ECC_Visibility, *TraceParams))
+	{
+		if (HitTest->Actor != this)
+		{
+			InitialPosition = GetActorLocation();
+			FinalPosition += GetActorUpVector();
+			FinalLedgePosition = FinalPosition;
+		}
+	}
+
+}
+
+/**
 	Interact with objects
 */
 void ACheesePawn::Interact()
 {
 
-	if (OverlappedPickupItems.Num() != 0)
+	InteractPress = 1.0f;
+
+	//
+	FHitResult* HitTest = new FHitResult();
+	FVector Trace = (GetActorForwardVector() * 100) + GetActorLocation();
+	FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
+
+	// Climb
+	if (!IsClimbing)
+	{
+
+		if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+		{
+
+			if (HitTest->Actor->ActorHasTag(ClimbTag))
+			{
+
+				IsClimbing = true;
+				DisableGravity();
+
+			}
+			else if (HitTest->Actor->ActorHasTag(LedgeTag) && !IsFalling)
+			{
+
+				//
+				IsLedgeClimbing = true;
+				DisableGravity();
+				LedgePositionCheck();
+				FreezeMovement();
+
+			}
+
+		}
+
+	}
+	else if (IsClimbing)
+	{
+
+		IsClimbing = false;
+		EnableGravity();
+
+	}
+
+	// PickUp - Item
+	if (OverlappedPickupItems.Num() != 0 && HatHeldItem == nullptr)
 	{
 
 		PickUpClosestItem();
 
 	}
+	else if (HatHeldItem != nullptr && OverlappedMushroomItems.Num() == 0)
+	{
+
+		EnableActorGravity(HatHeldItem);
+		Cast<UPrimitiveComponent>(HatHeldItem->GetRootComponent())->SetCollisionProfileName("PhysicsActor");
+		//HatHeldItem->DetachFromActor(FDetachmentTransformRules(EDetachmentRule::KeepWorld, true));
+		HatHeldItem = nullptr;
+
+	}
+
+	// PickUp - Mushroom
 	if (OverlappedMushroomItems.Num() != 0)
 	{
 
 		PickUpClosestMushroom();
 
 	}
+
+}
+
+void ACheesePawn::InteractRelease()
+{
+
+	InteractPress = 0.0f;
 
 }
 
@@ -384,9 +570,44 @@ void ACheesePawn::MoveForward(float AxisValue)
 
 	//
 	ForwardPress = AxisValue;
-	//
-	FVector FinalPosition = GetActorLocation() + GetPlayerForwardDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
-	SetActorLocation(FinalPosition);
+	if (!IsClimbing && !IsMovementFreezed)
+	{
+
+		//
+		FVector FinalPosition = GetActorLocation() + GetPlayerForwardDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
+		SetActorLocation(FinalPosition);
+
+	}
+	else if (IsClimbing)
+	{
+		//
+		FHitResult* HitTest = new FHitResult();
+		FVector Trace = (GetActorForwardVector() * 100) + GetActorLocation() + (GetActorUpVector() * -1) * 100;
+		FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
+		if (!GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+		{
+
+			LedgePositionCheck();
+			SetActorLocation(GetActorLocation() + GetActorForwardVector() * 2 * GetActorUpVector() * 2, false, nullptr, ETeleportType::TeleportPhysics);
+			IsClimbing = false;
+			EnableGravity();
+
+		}
+		else
+		{
+		
+			float ClimbCurve = SkeletalMesh->GetAnimInstance()->GetCurveValue("ClimbCurve");
+
+			//
+			FVector FinalPosition = GetActorLocation() + FVector(0, 0, AxisValue) * CharacterClimbSpeed * ClimbCurve * GetWorld()->GetDeltaSeconds();
+			SetActorLocation(FinalPosition);
+			LedgePositionCheck();
+		
+		}
+
+
+	}
+
 
 }
 
@@ -398,9 +619,40 @@ void ACheesePawn::MoveBackward(float AxisValue)
 
 	//
 	BackwardPress = AxisValue;
-	//
-	FVector FinalPosition = GetActorLocation() + GetPlayerBackwardDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
-	SetActorLocation(FinalPosition);
+	if (!IsClimbing && !IsMovementFreezed)
+	{
+		//
+		FVector FinalPosition = GetActorLocation() + GetPlayerBackwardDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
+		SetActorLocation(FinalPosition);
+	}
+	else if (IsClimbing && AxisValue != 0)
+	{
+
+		//
+		FHitResult* HitTest = new FHitResult();
+		FVector Trace = GetActorLocation() + (GetActorUpVector() * -1) * CapsuleComponent->GetScaledCapsuleHalfHeight() * 1.25f;
+		FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
+		if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+		{
+
+			IsClimbing = false;
+			EnableGravity();
+
+		}
+		else
+		{
+
+			float ClimbCurve = SkeletalMesh->GetAnimInstance()->GetCurveValue("ClimbCurve");
+
+			//
+			FVector FinalPosition = GetActorLocation() + FVector(0, 0, AxisValue * -1) * CharacterClimbSpeed * ClimbCurve * GetWorld()->GetDeltaSeconds();
+			SetActorLocation(FinalPosition);
+			LedgePositionCheck();
+
+		}
+
+	}
+
 
 }
 
@@ -412,9 +664,52 @@ void ACheesePawn::MoveLeft(float AxisValue)
 
 	//
 	LeftPress = AxisValue;
-	//
-	FVector FinalPosition = GetActorLocation() + GetPlayerLeftDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
-	SetActorLocation(FinalPosition);
+	if (!IsClimbing && !IsMovementFreezed)
+	{
+		//
+		FVector FinalPosition = GetActorLocation() + GetPlayerLeftDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
+		SetActorLocation(FinalPosition);
+
+	}
+	else if (IsClimbing && AxisValue != 0)
+	{
+
+		//
+		FHitResult* HitTest = new FHitResult();
+		FVector Trace = (GetActorForwardVector() * 100) + GetActorLocation();
+		FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
+
+		if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+		{
+
+			if (!HitTest->Actor->ActorHasTag(ClimbTag))
+			{
+
+				IsClimbing = false;
+				EnableGravity();
+
+			}
+			else
+			{
+
+				float ClimbCurve = SkeletalMesh->GetAnimInstance()->GetCurveValue("ClimbCurve");
+				//
+				FVector FinalPosition = GetActorLocation() + (GetActorRightVector() * -1) * CharacterClimbSpeed * ClimbCurve * GetWorld()->GetDeltaSeconds();
+				SetActorLocation(FinalPosition);
+				LedgePositionCheck();
+
+			}
+
+		}
+		else if (!GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+		{
+
+			IsClimbing = false;
+			EnableGravity();
+
+		}
+
+	}
 
 }
 
@@ -426,9 +721,54 @@ void ACheesePawn::MoveRight(float AxisValue)
 
 	//
 	RightPress = AxisValue;
-	//
-	FVector FinalPosition = GetActorLocation() + GetPlayerRightDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
-	SetActorLocation(FinalPosition);
+	if (!IsClimbing && !IsMovementFreezed)
+	{
+
+		//
+		FVector FinalPosition = GetActorLocation() + GetPlayerRightDirection(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
+		SetActorLocation(FinalPosition);
+
+	}
+	else if (IsClimbing && AxisValue != 0)
+	{
+
+		//
+		FHitResult* HitTest = new FHitResult();
+		FVector Trace = (GetActorForwardVector() * 100) + GetActorLocation();
+		FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
+
+		if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+		{
+
+			if (!HitTest->Actor->ActorHasTag(ClimbTag))
+			{
+
+				IsClimbing = false;
+				EnableGravity();
+
+			}
+			else
+			{
+
+				float ClimbCurve = SkeletalMesh->GetAnimInstance()->GetCurveValue("ClimbCurve");
+
+				//
+				FVector FinalPosition = GetActorLocation() + GetActorRightVector() * CharacterClimbSpeed * ClimbCurve * GetWorld()->GetDeltaSeconds();
+				SetActorLocation(FinalPosition);
+				LedgePositionCheck();
+
+			}
+
+		}
+		else if (!GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+		{
+
+			IsClimbing = false;
+			EnableGravity();
+
+		}
+
+	}
 
 }
 
@@ -457,14 +797,91 @@ void ACheesePawn::WalkingRelease()
 */
 void ACheesePawn::LeftThumbstickX(float AxisValue)
 {
-
+	
 	//
 	LeftThumbstickMoveX = AxisValue;
-	if (AxisValue != 0)
+	if (!IsClimbing && AxisValue != 0 && !IsMovementFreezed)
 	{
 
 		FVector FinalPosition = GetActorLocation() + GetPlayerForwardAxis(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
 		SetActorLocation(FinalPosition);
+
+	}
+	else if (IsClimbing && AxisValue != 0)
+	{
+		//
+		FHitResult* HitTest = new FHitResult();
+		FVector Trace = (GetActorForwardVector() * 100) + GetActorLocation();
+		FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
+
+		if (AxisValue > 0)
+		{
+
+			if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+			{
+
+				if (!HitTest->Actor->ActorHasTag(ClimbTag))
+				{
+
+					IsClimbing = false;
+					EnableGravity();
+
+				}
+				else
+				{
+
+					float ClimbCurve = SkeletalMesh->GetAnimInstance()->GetCurveValue("ClimbCurve");
+					//
+					FVector FinalPosition = GetActorLocation() + GetActorRightVector() * CharacterClimbSpeed * ClimbCurve * GetWorld()->GetDeltaSeconds();
+					SetActorLocation(FinalPosition);
+					LedgePositionCheck();
+
+				}
+
+			}
+			else if (!GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+			{
+
+				IsClimbing = false;
+				EnableGravity();
+
+			}
+
+		}
+		else if (AxisValue < 0)
+		{
+
+			if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+			{
+
+				if (!HitTest->Actor->ActorHasTag(ClimbTag))
+				{
+
+					IsClimbing = false;
+					EnableGravity();
+
+				}
+				else
+				{
+
+					float ClimbCurve = SkeletalMesh->GetAnimInstance()->GetCurveValue("ClimbCurve");
+					//
+					FVector FinalPosition = GetActorLocation() + GetActorRightVector() * AxisValue * CharacterClimbSpeed * ClimbCurve * GetWorld()->GetDeltaSeconds();
+					SetActorLocation(FinalPosition);
+					LedgePositionCheck();
+
+				}
+
+			}
+			else if (!GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+			{
+
+				IsClimbing = false;
+				EnableGravity();
+
+			}
+
+		}
 
 	}
 
@@ -478,11 +895,72 @@ void ACheesePawn::LeftThumbstickY(float AxisValue)
 
 	//
 	LeftThumbstickMoveY = AxisValue;
-	if (AxisValue != 0)
+	if (!IsClimbing && AxisValue != 0 && !IsMovementFreezed)
 	{
 
 		FVector FinalPosition = GetActorLocation() + GetPlayerRightAxis(AxisValue, true) * (IsWalking ? CharacterWalkSpeed : CharacterSprintSpeed) * GetWorld()->GetDeltaSeconds();
 		SetActorLocation(FinalPosition);
+
+	}
+	else if (IsClimbing && AxisValue != 0)
+	{
+
+		if (AxisValue > 0)
+		{
+
+			//
+			FHitResult* HitTest = new FHitResult();
+			FVector Trace = (GetActorForwardVector() * 100) + GetActorLocation() + (GetActorUpVector() * -1) * 100;
+			FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
+			if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+			{
+
+				float ClimbCurve = SkeletalMesh->GetAnimInstance()->GetCurveValue("ClimbCurve");
+
+				//
+				FVector FinalPosition = GetActorLocation() + FVector(0, 0, AxisValue) * CharacterClimbSpeed * ClimbCurve * GetWorld()->GetDeltaSeconds();
+				SetActorLocation(FinalPosition);
+				LedgePositionCheck();
+
+			}
+			else if (!GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+			{
+
+				LedgePositionCheck();
+				SetActorLocation(GetActorLocation() + GetActorForwardVector() * 2 * GetActorUpVector() * 2, false, nullptr, ETeleportType::TeleportPhysics);
+				IsClimbing = false;
+				EnableGravity();
+
+			}
+
+		}
+		else if (AxisValue < 0)
+		{
+
+			//
+			FHitResult* HitTest = new FHitResult();
+			FVector Trace = GetActorLocation() + (GetActorUpVector() * -1) * CapsuleComponent->GetScaledCapsuleHalfHeight() * 1.25f;
+			FCollisionQueryParams* TraceParams = new FCollisionQueryParams();
+			if (GetWorld()->LineTraceSingleByChannel(*HitTest, GetActorLocation(), Trace, ECC_Visibility, *TraceParams))
+			{
+
+				IsClimbing = false;
+				EnableGravity();
+
+			}
+			else
+			{
+
+				float ClimbCurve = SkeletalMesh->GetAnimInstance()->GetCurveValue("ClimbCurve");
+
+				//
+				FVector FinalPosition = GetActorLocation() + FVector(0, 0, AxisValue) * CharacterClimbSpeed * ClimbCurve * GetWorld()->GetDeltaSeconds();
+				SetActorLocation(FinalPosition);
+				LedgePositionCheck();
+
+			}
+
+		}
 
 	}
 
@@ -550,153 +1028,158 @@ void ACheesePawn::Zoom(float AxisValue)
 void ACheesePawn::InputCombination()
 {
 
-	//
-	FRotator FaceDirection = GetActorRotation();
-	// Forward
-	if (ForwardPress > 0)
-	{
-
-		FaceDirection = FMath().Lerp(GetActorRotation(), GetControlRotation(), 0.1f);
-		FaceDirection.Pitch = 0.0f;
-		FaceDirection.Roll = 0.0f;
-
-		//
-		SetActorRotation(FaceDirection);
-
-	}
-	// Backward
-	if (BackwardPress > 0)
+	if (!IsClimbing && !IsMovementFreezed)
 	{
 
 		//
-		FRotator Goal = GetControlRotation();
-		Goal.Yaw -= 180;
-		Goal.Pitch = 0.0f;
-		Goal.Roll = 0.0f;
+		FRotator FaceDirection = GetActorRotation();
+		// Forward
+		if (ForwardPress > 0)
+		{
 
-		//
-		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+			FaceDirection = FMath().Lerp(GetActorRotation(), GetControlRotation(), 0.1f);
+			FaceDirection.Pitch = 0.0f;
+			FaceDirection.Roll = 0.0f;
 
-		//
-		SetActorRotation(FaceDirection);
+			//
+			SetActorRotation(FaceDirection);
 
-	}
-	// Left
-	if (LeftPress > 0)
-	{
+		}
+		// Backward
+		if (BackwardPress > 0)
+		{
 
-		//
-		FRotator Goal = GetControlRotation();
-		Goal.Yaw -= 90;
-		Goal.Pitch = 0.0f;
-		Goal.Roll = 0.0f;
+			//
+			FRotator Goal = GetControlRotation();
+			Goal.Yaw -= 180;
+			Goal.Pitch = 0.0f;
+			Goal.Roll = 0.0f;
 
-		//
-		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+			//
+			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
 
-		//
-		SetActorRotation(FaceDirection);
+			//
+			SetActorRotation(FaceDirection);
 
-	}
-	// Left
-	if (RightPress > 0)
-	{
+		}
+		// Left
+		if (LeftPress > 0)
+		{
 
-		//
-		FRotator Goal = GetControlRotation();
-		Goal.Yaw += 90;
-		Goal.Pitch = 0.0f;
-		Goal.Roll = 0.0f;
+			//
+			FRotator Goal = GetControlRotation();
+			Goal.Yaw -= 90;
+			Goal.Pitch = 0.0f;
+			Goal.Roll = 0.0f;
 
-		//
-		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+			//
+			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
 
-		//
-		SetActorRotation(FaceDirection);
+			//
+			SetActorRotation(FaceDirection);
 
-	}
-	// Forward, Left
-	if (ForwardPress > 0 && LeftPress > 0)
-	{
+		}
+		// Left
+		if (RightPress > 0)
+		{
 
-		//
-		FRotator Goal = GetControlRotation();
-		Goal.Yaw -= 45;
-		Goal.Pitch = 0.0f;
-		Goal.Roll = 0.0f;
+			//
+			FRotator Goal = GetControlRotation();
+			Goal.Yaw += 90;
+			Goal.Pitch = 0.0f;
+			Goal.Roll = 0.0f;
 
-		//
-		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+			//
+			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
 
-		//
-		SetActorRotation(FaceDirection);
+			//
+			SetActorRotation(FaceDirection);
 
-	}
-	// Forward, Right
-	if (ForwardPress > 0 && RightPress > 0)
-	{
+		}
+		// Forward, Left
+		if (ForwardPress > 0 && LeftPress > 0)
+		{
 
-		//
-		FRotator Goal = GetControlRotation();
-		Goal.Yaw += 45;
-		Goal.Pitch = 0.0f;
-		Goal.Roll = 0.0f;
+			//
+			FRotator Goal = GetControlRotation();
+			Goal.Yaw -= 45;
+			Goal.Pitch = 0.0f;
+			Goal.Roll = 0.0f;
 
-		//
-		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+			//
+			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
 
-		//
-		SetActorRotation(FaceDirection);
+			//
+			SetActorRotation(FaceDirection);
 
-	}
-	// Backward, Left
-	if (BackwardPress > 0 && LeftPress > 0)
-	{
+		}
+		// Forward, Right
+		if (ForwardPress > 0 && RightPress > 0)
+		{
 
-		//
-		FRotator Goal = GetControlRotation();
-		Goal.Yaw -= 135;
-		Goal.Pitch = 0.0f;
-		Goal.Roll = 0.0f;
+			//
+			FRotator Goal = GetControlRotation();
+			Goal.Yaw += 45;
+			Goal.Pitch = 0.0f;
+			Goal.Roll = 0.0f;
 
-		//
-		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+			//
+			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
 
-		//
-		SetActorRotation(FaceDirection);
+			//
+			SetActorRotation(FaceDirection);
 
-	}
-	// Backward, Right
-	if (BackwardPress > 0 && RightPress > 0)
-	{
+		}
+		// Backward, Left
+		if (BackwardPress > 0 && LeftPress > 0)
+		{
 
-		//
-		FRotator Goal = GetControlRotation();
-		Goal.Yaw += 135;
-		Goal.Pitch = 0.0f;
-		Goal.Roll = 0.0f;
+			//
+			FRotator Goal = GetControlRotation();
+			Goal.Yaw -= 135;
+			Goal.Pitch = 0.0f;
+			Goal.Roll = 0.0f;
 
-		//
-		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+			//
+			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
 
-		//
-		SetActorRotation(FaceDirection);
+			//
+			SetActorRotation(FaceDirection);
 
-	}
-	// Left Thumbstick Axes
-	if (LeftThumbstickMoveX != 0 || LeftThumbstickMoveY != 0)
-	{
+		}
+		// Backward, Right
+		if (BackwardPress > 0 && RightPress > 0)
+		{
 
-		//
-		FRotator Goal = GetControlRotation();
-		Goal.Yaw += atan2(LeftThumbstickMoveX, LeftThumbstickMoveY) * 180 / PI;
-		Goal.Pitch = 0.0f;
-		Goal.Roll = 0.0f;
+			//
+			FRotator Goal = GetControlRotation();
+			Goal.Yaw += 135;
+			Goal.Pitch = 0.0f;
+			Goal.Roll = 0.0f;
 
-		FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+			//
+			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
 
-		//
-		SetActorRotation(FaceDirection);
+			//
+			SetActorRotation(FaceDirection);
+
+		}
+		// Left Thumbstick Axes
+		if (LeftThumbstickMoveX != 0 || LeftThumbstickMoveY != 0)
+		{
+
+			//
+			FRotator Goal = GetControlRotation();
+			Goal.Yaw += atan2(LeftThumbstickMoveX, LeftThumbstickMoveY) * 180 / PI;
+			Goal.Pitch = 0.0f;
+			Goal.Roll = 0.0f;
+
+			FaceDirection = FMath().Lerp(GetActorRotation(), Goal, 0.1f);
+
+			//
+			SetActorRotation(FaceDirection);
+
+		}
 
 	}
 
@@ -849,6 +1332,30 @@ void ACheesePawn::UnfreezeMovement()
 {
 	
 	IsMovementFreezed = false;
+
+}
+
+/**
+
+	Disable player gravity but maintain player physics
+
+*/
+void ACheesePawn::DisableGravity()
+{
+
+	CapsuleComponent->SetSimulatePhysics(false);
+
+}
+
+/**
+
+	Enable player gravity
+
+*/
+void ACheesePawn::EnableGravity()
+{
+
+	CapsuleComponent->SetSimulatePhysics(true);
 
 }
 

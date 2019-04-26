@@ -7,7 +7,7 @@
 #include "CheesePawn.generated.h"
 
 UCLASS()
-class MEINPROJEKT_API ACheesePawn : public APawn
+class TESTING_API ACheesePawn : public APawn
 {
 	GENERATED_BODY()
 
@@ -18,6 +18,22 @@ public:
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
+
+	//==================================================================================================================
+	//	SOCKET TAGS
+	//==================================================================================================================
+	//
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Character Control - Socket Names", meta = (AllowPrivateAccess = "true"))
+		FName ItemHatSocketName;
+	//
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Character Control - Socket Names", meta = (AllowPrivateAccess = "true"))
+		FName RightHandStaffSocketName;
+	////
+	//UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Character Control - Socket Names", meta = (AllowPrivateAccess = "true"))
+	//	FName LeftHandPickupSocket;
+	//
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Character Control - Socket Names", meta = (AllowPrivateAccess = "true"))
+		FName BackStaffSocketName;
 
 	//==================================================================================================================
 	//	INTERACTION TAGS
@@ -78,6 +94,9 @@ protected:
 	//
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Character Control - Movement", meta = (ClampMin = "0", ClampMax = "1", UIMin = "0", UIMax = "1", AllowPrivateAccess = "true"))
 		float MinimumValueToNotSprint;
+	//
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Character Control - Movement", meta = (AllowPrivateAccess = "true"))
+		FVector FinalLedgePosition;
 
 	//==================================================================================================================
 	//	CAMERA SETTINGS
@@ -115,11 +134,17 @@ protected:
 		float MushroomCount;
 
 	//==================================================================================================================
-	//	CURRENT HELD ITEM
+	//	CURRENT HELD ITEMS
 	//==================================================================================================================
 	//
 	UPROPERTY(BlueprintReadWrite, Category = "Character Inventory", meta = (AllowPrivateAccess = "true"))
-		AActor* HeldItem;
+		AActor* HatHeldItem;
+	//
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Inventory", meta = (AllowPrivateAccess = "true"))
+		AActor* StaffHeldItem;
+	////
+	//UPROPERTY(BlueprintReadWrite, Category = "Character Inventory", meta = (AllowPrivateAccess = "true"))
+	//	AActor* HandHeldItem;
 
 	//==================================================================================================================
 	//	OVERLAP LISTS
@@ -176,6 +201,9 @@ protected:
 	// Value to check if Key is pressed
 	UPROPERTY(BlueprintReadOnly, Category = "Pawn Animation Hook", meta = (AllowPrivateAccess = "true"))
 		float RightPress;
+	// Value to check if Key is pressed
+	UPROPERTY(BlueprintReadOnly, Category = "Pawn Animation Hook", meta = (AllowPrivateAccess = "true"))
+		float InteractPress;
 	// Value to check if left thumbstick is moved
 	UPROPERTY(BlueprintReadOnly, Category = "Pawn Animation Hook", meta = (AllowPrivateAccess = "true"))
 		float LeftThumbstickMoveX;
@@ -251,6 +279,12 @@ protected:
 	//	Unfreeze character movement
 	UFUNCTION(BlueprintCallable, Category = "Character Control - Manipulate Character", meta = (AllowPrivateAccess = "true"))
 		void UnfreezeMovement();
+	//
+	UFUNCTION(BlueprintCallable, Category = "Character Control - Manipulate Character", meta = (AllowPrivateAccess = "true"))
+		void DisableGravity();
+	//
+	UFUNCTION(BlueprintCallable, Category = "Character Control - Manipulate Character", meta = (AllowPrivateAccess = "true"))
+		void EnableGravity();
 
 	//==================================================================================================================
 	//	PLAYER OVERLAP EVENTS
@@ -297,6 +331,7 @@ protected:
 	//==================================================================================================================
 	// Key Press Events
 	void Interact();
+	void InteractRelease();
 	void WalkingPress();
 	void WalkingRelease();
 	void MoveForward(float AxisValue);
@@ -321,10 +356,21 @@ protected:
 	void ControllerWalksSprintCheck();
 	void PickUpClosestItem();
 	void PickUpClosestMushroom();
-	void RaycastCheck();
+	void UpdateSocketPositions();
+	void LedgeTransition();
+	void LedgePositionCheck();
+
+	//==================================================================================================================
+	//	CODE BASED CALLABLE FUNCTIONS
+	//==================================================================================================================
+	void EnableActorGravity(AActor* Actor);
+	void DisableActorGravity(AActor* Actor);
 
 	//==================================================================================================================
 	void CharacterInitialization();
+
+	UFUNCTION(BlueprintCallable, Category = "Character Control - Getter", meta = (AllowPrivateAccess = "true"))
+		UInputComponent* GetInputComponent();
 
 public:	
 	// Called every frame
@@ -333,6 +379,4 @@ public:
 	// Called to bind functionality to input
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
-	
-	
 };
